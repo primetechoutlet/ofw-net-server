@@ -12,6 +12,12 @@ server.on('connection', (ws) => {
     let isStaff = false;
     let isMonitor = false;
 
+    const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+        }
+    }, 15000);
+
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
@@ -23,15 +29,18 @@ server.on('connection', (ws) => {
                 pcs[pcId] = { 
                     ws, 
                     pcId, 
-                    status: data.status, 
-                    timeRemaining: data.timeRemaining || 0, 
-                    pendingPayment: null 
+                    status: 'idle', 
+                    timeRemaining: 0, 
+                    pendingPayment: null,
+                    session: { minutes: 0, amount: 0 }
                 };
-                broadcastToStaffAndMonitors({ 
+                broadcastToAll({ 
                     type: 'pc_status', 
                     pcId, 
-                    status: data.status, 
-                    timeRemaining: data.timeRemaining || 0 
+                    status: 'idle', 
+                    timeRemaining: 0,
+                    pendingPayment: null,
+                    session: { minutes: 0, amount: 0 }
                 });
                 console.log(`✅ PC ${pcId} registered`);
             }
@@ -41,18 +50,18 @@ server.on('connection', (ws) => {
                 if (data.password === 'ofw123') {
                     isStaff = true;
                     staff.push(ws);
-                    // Send all existing PC statuses
+                    console.log('✅ Staff logged in');
                     Object.keys(pcs).forEach(id => {
+                        const pc = pcs[id];
                         ws.send(JSON.stringify({
                             type: 'pc_status',
                             pcId: id,
-                            status: pcs[id].status,
-                            timeRemaining: pcs[id].timeRemaining || 0,
-                            pendingPayment: pcs[id].pendingPayment,
-                            session: pcs[id].session || { minutes: 0, amount: 0 }
+                            status: pc.status || 'idle',
+                            timeRemaining: pc.timeRemaining || 0,
+                            pendingPayment: pc.pendingPayment || null,
+                            session: pc.session || { minutes: 0, amount: 0 }
                         }));
                     });
-                    console.log('✅ Staff logged in');
                 }
             }
 
@@ -61,100 +70,113 @@ server.on('connection', (ws) => {
                 if (data.password === 'ofw123') {
                     isMonitor = true;
                     monitors.push(ws);
+                    console.log('✅ Monitor logged in');
                     Object.keys(pcs).forEach(id => {
+                        const pc = pcs[id];
                         ws.send(JSON.stringify({
                             type: 'pc_status',
                             pcId: id,
-                            status: pcs[id].status,
-                            timeRemaining: pcs[id].timeRemaining || 0,
-                            pendingPayment: pcs[id].pendingPayment,
-                            session: pcs[id].session || { minutes: 0, amount: 0 }
+                            status: pc.status || 'idle',
+                            timeRemaining: pc.timeRemaining || 0,
+                            pendingPayment: pc.pendingPayment || null,
+                            session: pc.session || { minutes: 0, amount: 0 }
                         }));
                     });
-                    console.log('✅ Monitor logged in');
                 }
             }
 
-            // Payment request from client
+            // 🔥 PAYMENT REQUEST - shows "Confirm Payment" button
             if (data.type === 'payment_request') {
                 if (pcs[data.pcId]) {
-                    pcs[data.pcId].pendingPayment = { 
+                    const pc = pcs[data.pcId];
+                    pc.pendingPayment = { 
                         minutes: data.minutes, 
                         amount: data.amount 
                     };
-                    pcs[data.pcId].status = 'pending';
+                    pc.status = 'pending';
+                    console.log(`💰 Payment request from ${data.pcId}: ₱${data.amount} (${data.minutes}min)`);
+                    
+                    // ONLY send payment_request to staff (this shows the buttons)
                     broadcastToStaffAndMonitors({
                         type: 'payment_request',
                         pcId: data.pcId,
                         minutes: data.minutes,
                         amount: data.amount
                     });
-                    console.log(`💰 Payment request from ${data.pcId}: ₱${data.amount} (${data.minutes}min)`);
+                } else {
+                    console.log(`❌ PC ${data.pcId} not found`);
                 }
             }
 
-            // 🔥 FIXED: Confirm payment and START SESSION
+            // 🔥 CONFIRM PAYMENT - starts the timer
             if (data.type === 'confirm_payment' && isStaff) {
+                console.log(`🔑 Staff confirming payment for ${data.pcId}`);
                 if (pcs[data.pcId]) {
                     const pc = pcs[data.pcId];
                     pc.pendingPayment = null;
                     pc.status = 'running';
                     pc.session = { minutes: data.minutes, amount: data.amount };
+                    pc.timeRemaining = data.minutes * 60;
                     
-                    // Tell client to START SESSION (unlock + start timer)
-                    pc.ws.send(JSON.stringify({
-                        type: 'start_session',
-                        pcId: data.pcId,
-                        minutes: data.minutes,
-                        amount: data.amount
-                    }));
+                    // Send start_session to client
+                    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+                        pc.ws.send(JSON.stringify({
+                            type: 'start_session',
+                            pcId: data.pcId,
+                            minutes: data.minutes,
+                            amount: data.amount
+                        }));
+                        console.log(`📤 Sent start_session to ${data.pcId}`);
+                    }
                     
-                    // Tell client to unlock
-                    pc.ws.send(JSON.stringify({
-                        type: 'unlock',
-                        pcId: data.pcId
-                    }));
+                    // Send unlock to client
+                    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+                        pc.ws.send(JSON.stringify({
+                            type: 'unlock',
+                            pcId: data.pcId
+                        }));
+                    }
                     
-                    broadcastToStaffAndMonitors({
+                    // Update status for everyone
+                    broadcastToAll({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'running',
                         timeRemaining: data.minutes * 60,
-                        session: { minutes: data.minutes, amount: data.amount },
-                        pendingPayment: null
+                        pendingPayment: null,
+                        session: { minutes: data.minutes, amount: data.amount }
                     });
                     
-                    broadcastToStaffAndMonitors({
+                    broadcastToAll({
                         type: 'log',
                         pcId: data.pcId,
                         action: '✅ Payment Confirmed - Session Started',
                         amount: `₱${data.amount} (${data.minutes}min)`
                     });
-                    console.log(`✅ Session started on ${data.pcId}: ${data.minutes}min · ₱${data.amount}`);
                 }
             }
 
-            // Decline payment (staff)
+            // Decline payment
             if (data.type === 'decline_payment' && isStaff) {
                 if (pcs[data.pcId]) {
-                    pcs[data.pcId].pendingPayment = null;
-                    pcs[data.pcId].status = 'idle';
-                    pcs[data.pcId].ws.send(JSON.stringify({
-                        type: 'payment_declined',
-                        pcId: data.pcId
-                    }));
-                    broadcastToStaffAndMonitors({
+                    const pc = pcs[data.pcId];
+                    pc.pendingPayment = null;
+                    pc.status = 'idle';
+                    
+                    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+                        pc.ws.send(JSON.stringify({
+                            type: 'payment_declined',
+                            pcId: data.pcId
+                        }));
+                    }
+                    
+                    broadcastToAll({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'idle',
                         timeRemaining: 0,
-                        pendingPayment: null
-                    });
-                    broadcastToStaffAndMonitors({
-                        type: 'log',
-                        pcId: data.pcId,
-                        action: '❌ Payment Declined',
-                        amount: '-'
+                        pendingPayment: null,
+                        session: { minutes: 0, amount: 0 }
                     });
                     console.log(`❌ Payment declined for ${data.pcId}`);
                 }
@@ -163,22 +185,24 @@ server.on('connection', (ws) => {
             // Unlock PC (staff)
             if (data.type === 'unlock' && isStaff) {
                 if (pcs[data.pcId]) {
-                    pcs[data.pcId].status = 'idle';
-                    pcs[data.pcId].pendingPayment = null;
-                    pcs[data.pcId].ws.send(JSON.stringify({
-                        type: 'unlock',
-                        pcId: data.pcId
-                    }));
-                    broadcastToStaffAndMonitors({
-                        type: 'unlock_success',
-                        pcId: data.pcId
-                    });
-                    broadcastToStaffAndMonitors({
+                    const pc = pcs[data.pcId];
+                    pc.status = 'idle';
+                    pc.pendingPayment = null;
+                    
+                    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+                        pc.ws.send(JSON.stringify({
+                            type: 'unlock',
+                            pcId: data.pcId
+                        }));
+                    }
+                    
+                    broadcastToAll({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'idle',
                         timeRemaining: 0,
-                        pendingPayment: null
+                        pendingPayment: null,
+                        session: { minutes: 0, amount: 0 }
                     });
                     console.log(`🔓 Unlocked ${data.pcId}`);
                 }
@@ -187,16 +211,19 @@ server.on('connection', (ws) => {
             // Status update from client
             if (data.type === 'status') {
                 if (pcs[data.pcId]) {
-                    pcs[data.pcId].status = data.status;
-                    pcs[data.pcId].timeRemaining = data.timeRemaining || 0;
-                    pcs[data.pcId].session = data.session || { minutes: 0, amount: 0 };
-                    broadcastToStaffAndMonitors({
+                    const pc = pcs[data.pcId];
+                    pc.status = data.status || pc.status;
+                    pc.timeRemaining = data.timeRemaining || 0;
+                    if (data.session) {
+                        pc.session = data.session;
+                    }
+                    broadcastToAll({
                         type: 'pc_status',
                         pcId: data.pcId,
-                        status: data.status,
-                        timeRemaining: data.timeRemaining || 0,
-                        session: data.session || { minutes: 0, amount: 0 },
-                        pendingPayment: pcs[data.pcId].pendingPayment
+                        status: pc.status,
+                        timeRemaining: pc.timeRemaining,
+                        pendingPayment: pc.pendingPayment || null,
+                        session: pc.session || { minutes: 0, amount: 0 }
                     });
                 }
             }
@@ -204,25 +231,25 @@ server.on('connection', (ws) => {
             // Stop session (staff)
             if (data.type === 'stop_session' && isStaff) {
                 if (pcs[data.pcId]) {
-                    pcs[data.pcId].status = 'idle';
-                    pcs[data.pcId].timeRemaining = 0;
-                    pcs[data.pcId].session = { minutes: 0, amount: 0 };
-                    pcs[data.pcId].ws.send(JSON.stringify({
-                        type: 'stop_session',
-                        pcId: data.pcId
-                    }));
-                    broadcastToStaffAndMonitors({
+                    const pc = pcs[data.pcId];
+                    pc.status = 'idle';
+                    pc.timeRemaining = 0;
+                    pc.session = { minutes: 0, amount: 0 };
+                    
+                    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+                        pc.ws.send(JSON.stringify({
+                            type: 'stop_session',
+                            pcId: data.pcId
+                        }));
+                    }
+                    
+                    broadcastToAll({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'idle',
                         timeRemaining: 0,
+                        pendingPayment: null,
                         session: { minutes: 0, amount: 0 }
-                    });
-                    broadcastToStaffAndMonitors({
-                        type: 'log',
-                        pcId: data.pcId,
-                        action: '⏹️ Session Stopped',
-                        amount: '-'
                     });
                     console.log(`⏹️ Stopped session on ${data.pcId}`);
                 }
@@ -231,38 +258,43 @@ server.on('connection', (ws) => {
             // Lock PC (staff)
             if (data.type === 'lock' && isStaff) {
                 if (pcs[data.pcId]) {
-                    pcs[data.pcId].status = 'locked';
-                    pcs[data.pcId].timeRemaining = 0;
-                    pcs[data.pcId].ws.send(JSON.stringify({
-                        type: 'lock',
-                        pcId: data.pcId
-                    }));
-                    broadcastToStaffAndMonitors({
+                    const pc = pcs[data.pcId];
+                    pc.status = 'locked';
+                    pc.timeRemaining = 0;
+                    
+                    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+                        pc.ws.send(JSON.stringify({
+                            type: 'lock',
+                            pcId: data.pcId
+                        }));
+                    }
+                    
+                    broadcastToAll({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'locked',
-                        timeRemaining: 0
+                        timeRemaining: 0,
+                        pendingPayment: null,
+                        session: { minutes: 0, amount: 0 }
                     });
                     console.log(`🔒 Locked ${data.pcId}`);
                 }
             }
 
-            // Ping from client
             if (data.type === 'pong') {
-                if (pcs[data.pcId]) {
-                    // Update last seen
-                }
+                // Connection is alive
             }
 
         } catch(e) {
-            console.error('Error:', e);
+            console.error('❌ Error processing message:', e);
         }
     });
 
     ws.on('close', () => {
+        clearInterval(pingInterval);
         if (pcId && pcs[pcId]) {
             delete pcs[pcId];
-            broadcastToStaffAndMonitors({ type: 'pc_offline', pcId });
+            broadcastToAll({ type: 'pc_offline', pcId });
             console.log(`📡 PC ${pcId} disconnected`);
         }
         const staffIndex = staff.indexOf(ws);
@@ -272,11 +304,25 @@ server.on('connection', (ws) => {
     });
 });
 
-function broadcastToStaffAndMonitors(data) {
+function broadcastToAll(data) {
     const allClients = [...staff, ...monitors];
     allClients.forEach(s => {
-        if (s.readyState === WebSocket.OPEN) {
-            s.send(JSON.stringify(data));
+        if (s && s.readyState === WebSocket.OPEN) {
+            try {
+                s.send(JSON.stringify(data));
+            } catch(e) {}
+        }
+    });
+}
+
+function broadcastToStaffAndMonitors(data) {
+    // Only send to staff and monitors (not clients)
+    const allClients = [...staff, ...monitors];
+    allClients.forEach(s => {
+        if (s && s.readyState === WebSocket.OPEN) {
+            try {
+                s.send(JSON.stringify(data));
+            } catch(e) {}
         }
     });
 }
