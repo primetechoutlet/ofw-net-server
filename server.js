@@ -118,42 +118,35 @@ if (data.type === 'confirm_payment' && isStaff) {
     console.log(`🔑 Staff confirming payment for ${data.pcId}`);
     if (pcs[data.pcId]) {
         const pc = pcs[data.pcId];
-        
-        // 🔥 Clear pending payment
         pc.pendingPayment = null;
         pc.status = 'running';
         pc.session = { minutes: data.minutes, amount: data.amount };
         pc.timeRemaining = data.minutes * 60;
         
         console.log(`✅ Starting session on ${data.pcId}: ${data.minutes}min · ₱${data.amount}`);
-        console.log(`🔗 Client websocket state: ${pc.ws ? 'EXISTS' : 'NULL'}, readyState: ${pc.ws ? pc.ws.readyState : 'N/A'}`);
         
-        // 🔥 FIRST: Send start_session to client
+        // 🔥 Send start_session to client
         if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
-            const startMsg = {
+            pc.ws.send(JSON.stringify({
                 type: 'start_session',
                 pcId: data.pcId,
                 minutes: data.minutes,
                 amount: data.amount
-            };
-            pc.ws.send(JSON.stringify(startMsg));
-            console.log(`📤 Sent start_session to ${data.pcId}:`, startMsg);
-        } else {
-            console.log(`❌ Client ${data.pcId} websocket is not open (state: ${pc.ws ? pc.ws.readyState : 'no ws'})`);
+            }));
+            console.log(`📤 Sent start_session to ${data.pcId}`);
         }
         
-        // 🔥 SECOND: Send unlock to client
+        // 🔥 Send unlock to client
         if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
-            const unlockMsg = {
+            pc.ws.send(JSON.stringify({
                 type: 'unlock',
                 pcId: data.pcId
-            };
-            pc.ws.send(JSON.stringify(unlockMsg));
+            }));
             console.log(`📤 Sent unlock to ${data.pcId}`);
         }
         
-        // 🔥 THIRD: Broadcast to staff and monitors
-        broadcastToAll({
+        // 🔥 Broadcast to staff and monitors ONLY (not to client!)
+        broadcastToStaffAndMonitors({
             type: 'pc_status',
             pcId: data.pcId,
             status: 'running',
@@ -162,7 +155,7 @@ if (data.type === 'confirm_payment' && isStaff) {
             session: { minutes: data.minutes, amount: data.amount }
         });
         
-        broadcastToAll({
+        broadcastToStaffAndMonitors({
             type: 'log',
             pcId: data.pcId,
             action: '✅ Payment Confirmed - Session Started',
@@ -187,13 +180,13 @@ if (data.type === 'confirm_payment' && isStaff) {
                         }));
                     }
                     
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'idle',
                         timeRemaining: 0,
                         pendingPayment: null,
-                        session: { minutes: 0, amount: 0 }
+                        session: { minutes: data.minutes, amount: data.amount }
                     });
                     
                     broadcastToAll({
