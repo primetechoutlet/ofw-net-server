@@ -307,6 +307,28 @@ server.on('connection', (ws) => {
                 }
             }
 
+	// 🔥 NEW: Shutdown all PCs (staff)
+	if (data.type === 'shutdown_all' && isStaff) {
+	    if (data.password === 'ofw123') {
+	        console.log('⏻ Shutting down all PCs...');
+        	Object.keys(pcs).forEach(id => {
+	            const pc = pcs[id];
+        	    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+	                pc.ws.send(JSON.stringify({
+        	            type: 'shutdown'
+	                }));
+        	        console.log(`📤 Sent shutdown to ${id}`);
+	            }
+	        });
+	        broadcastToStaffAndMonitors({
+        	    type: 'log',
+	            pcId: 'SYSTEM',
+	            action: '⏻ Shutdown All Command Executed',
+	            amount: '-'
+	        });
+	    }
+	}
+
             if (data.type === 'pong') {
                 // Connection is alive
             }
