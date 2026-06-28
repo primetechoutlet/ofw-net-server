@@ -12,7 +12,7 @@ server.on('connection', (ws) => {
     let isStaff = false;
     let isMonitor = false;
 
-    // 🔥 Keep connection alive - ping every 5 seconds
+    // Keep connection alive - ping every 5 seconds
     const pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ping' }));
@@ -35,7 +35,7 @@ server.on('connection', (ws) => {
                     pendingPayment: null,
                     session: { minutes: 0, amount: 0 }
                 };
-                broadcastToAll({ 
+                broadcastToStaffAndMonitors({ 
                     type: 'pc_status', 
                     pcId, 
                     status: data.status, 
@@ -102,7 +102,7 @@ server.on('connection', (ws) => {
                     pc.status = 'pending';
                     console.log(`💰 Payment request from ${data.pcId}: ₱${data.amount} (${data.minutes}min)`);
                     
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'payment_request',
                         pcId: data.pcId,
                         minutes: data.minutes,
@@ -113,58 +113,58 @@ server.on('connection', (ws) => {
                 }
             }
 
-// Confirm payment (staff)
-if (data.type === 'confirm_payment' && isStaff) {
-    console.log(`🔑 Staff confirming payment for ${data.pcId}`);
-    if (pcs[data.pcId]) {
-        const pc = pcs[data.pcId];
-        pc.pendingPayment = null;
-        pc.status = 'running';
-        pc.session = { minutes: data.minutes, amount: data.amount };
-        pc.timeRemaining = data.minutes * 60;
-        
-        console.log(`✅ Starting session on ${data.pcId}: ${data.minutes}min · ₱${data.amount}`);
-        
-        // 🔥 Send start_session to client
-        if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
-            pc.ws.send(JSON.stringify({
-                type: 'start_session',
-                pcId: data.pcId,
-                minutes: data.minutes,
-                amount: data.amount
-            }));
-            console.log(`📤 Sent start_session to ${data.pcId}`);
-        }
-        
-        // 🔥 Send unlock to client
-        if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
-            pc.ws.send(JSON.stringify({
-                type: 'unlock',
-                pcId: data.pcId
-            }));
-            console.log(`📤 Sent unlock to ${data.pcId}`);
-        }
-        
-        // 🔥 Broadcast to staff and monitors ONLY (not to client!)
-        broadcastToStaffAndMonitors({
-            type: 'pc_status',
-            pcId: data.pcId,
-            status: 'running',
-            timeRemaining: data.minutes * 60,
-            pendingPayment: null,
-            session: { minutes: data.minutes, amount: data.amount }
-        });
-        
-        broadcastToStaffAndMonitors({
-            type: 'log',
-            pcId: data.pcId,
-            action: '✅ Payment Confirmed - Session Started',
-            amount: `₱${data.amount} (${data.minutes}min)`
-        });
-    } else {
-        console.log(`❌ PC ${data.pcId} not found for confirmation`);
-    }
-}
+            // 🔥 FIXED: Confirm payment - sends start_session ONLY to client
+            if (data.type === 'confirm_payment' && isStaff) {
+                console.log(`🔑 Staff confirming payment for ${data.pcId}`);
+                if (pcs[data.pcId]) {
+                    const pc = pcs[data.pcId];
+                    pc.pendingPayment = null;
+                    pc.status = 'running';
+                    pc.session = { minutes: data.minutes, amount: data.amount };
+                    pc.timeRemaining = data.minutes * 60;
+                    
+                    console.log(`✅ Starting session on ${data.pcId}: ${data.minutes}min · ₱${data.amount}`);
+                    
+                    // 🔥 SEND start_session to client ONLY
+                    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+                        pc.ws.send(JSON.stringify({
+                            type: 'start_session',
+                            pcId: data.pcId,
+                            minutes: data.minutes,
+                            amount: data.amount
+                        }));
+                        console.log(`📤 Sent start_session to ${data.pcId}`);
+                    }
+                    
+                    // 🔥 SEND unlock to client ONLY
+                    if (pc.ws && pc.ws.readyState === WebSocket.OPEN) {
+                        pc.ws.send(JSON.stringify({
+                            type: 'unlock',
+                            pcId: data.pcId
+                        }));
+                        console.log(`📤 Sent unlock to ${data.pcId}`);
+                    }
+                    
+                    // 🔥 Broadcast pc_status to STAFF AND MONITORS ONLY (NOT to client!)
+                    broadcastToStaffAndMonitors({
+                        type: 'pc_status',
+                        pcId: data.pcId,
+                        status: 'running',
+                        timeRemaining: data.minutes * 60,
+                        pendingPayment: null,
+                        session: { minutes: data.minutes, amount: data.amount }
+                    });
+                    
+                    broadcastToStaffAndMonitors({
+                        type: 'log',
+                        pcId: data.pcId,
+                        action: '✅ Payment Confirmed - Session Started',
+                        amount: `₱${data.amount} (${data.minutes}min)`
+                    });
+                } else {
+                    console.log(`❌ PC ${data.pcId} not found for confirmation`);
+                }
+            }
 
             // Decline payment (staff)
             if (data.type === 'decline_payment' && isStaff) {
@@ -186,10 +186,10 @@ if (data.type === 'confirm_payment' && isStaff) {
                         status: 'idle',
                         timeRemaining: 0,
                         pendingPayment: null,
-                        session: { minutes: data.minutes, amount: data.amount }
+                        session: { minutes: 0, amount: 0 }
                     });
                     
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'log',
                         pcId: data.pcId,
                         action: '❌ Payment Declined',
@@ -213,7 +213,7 @@ if (data.type === 'confirm_payment' && isStaff) {
                         }));
                     }
                     
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'idle',
@@ -222,7 +222,7 @@ if (data.type === 'confirm_payment' && isStaff) {
                         session: { minutes: 0, amount: 0 }
                     });
                     
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'log',
                         pcId: data.pcId,
                         action: '🔓 Unlocked',
@@ -232,7 +232,7 @@ if (data.type === 'confirm_payment' && isStaff) {
                 }
             }
 
-            // 🔥 FIXED: Status update from client - broadcast to ALL
+            // 🔥 Status update from client - broadcast to staff and monitors ONLY
             if (data.type === 'status') {
                 if (pcs[data.pcId]) {
                     const pc = pcs[data.pcId];
@@ -243,8 +243,8 @@ if (data.type === 'confirm_payment' && isStaff) {
                     }
                     console.log(`📊 Status update from ${data.pcId}: ${pc.status}, ${pc.timeRemaining}s`);
                     
-                    // 🔥 Broadcast to ALL connected clients (staff + monitors)
-                    broadcastToAll({
+                    // 🔥 Broadcast to STAFF AND MONITORS ONLY (NOT back to client!)
+                    broadcastToStaffAndMonitors({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: pc.status,
@@ -270,7 +270,7 @@ if (data.type === 'confirm_payment' && isStaff) {
                         }));
                     }
                     
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'idle',
@@ -279,7 +279,7 @@ if (data.type === 'confirm_payment' && isStaff) {
                         session: { minutes: 0, amount: 0 }
                     });
                     
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'log',
                         pcId: data.pcId,
                         action: '⏹️ Session Stopped',
@@ -303,7 +303,7 @@ if (data.type === 'confirm_payment' && isStaff) {
                         }));
                     }
                     
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'pc_status',
                         pcId: data.pcId,
                         status: 'locked',
@@ -328,7 +328,7 @@ if (data.type === 'confirm_payment' && isStaff) {
                             console.log(`📤 Sent shutdown to ${id}`);
                         }
                     });
-                    broadcastToAll({
+                    broadcastToStaffAndMonitors({
                         type: 'log',
                         pcId: 'SYSTEM',
                         action: '⏻ Shutdown All Command Executed',
@@ -353,7 +353,7 @@ if (data.type === 'confirm_payment' && isStaff) {
         console.log(`📡 Connection closed for ${pcId || 'unknown'}`);
         if (pcId && pcs[pcId]) {
             delete pcs[pcId];
-            broadcastToAll({ 
+            broadcastToStaffAndMonitors({ 
                 type: 'pc_offline', 
                 pcId,
                 status: 'offline'
@@ -371,7 +371,7 @@ if (data.type === 'confirm_payment' && isStaff) {
     });
 });
 
-function broadcastToAll(data) {
+function broadcastToStaffAndMonitors(data) {
     const allClients = [...staff, ...monitors];
     let sentCount = 0;
     allClients.forEach(s => {
@@ -385,7 +385,7 @@ function broadcastToAll(data) {
         }
     });
     if (sentCount > 0) {
-        console.log(`📤 Broadcasted ${data.type} to ${sentCount} clients`);
+        console.log(`📤 Broadcasted ${data.type} to ${sentCount} staff/monitors`);
     }
 }
 
